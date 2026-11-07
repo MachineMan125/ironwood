@@ -117,8 +117,24 @@ jobs:
         run: |
           xvfb-run -a -s "-screen 0 2560x1440x24" \
             ./mach python build/pgo/profileserver.py || {
-              echo "::group::Kernel messages (crash details)"
-              sudo dmesg | tail -n 40
+              BIN="obj-release/dist/bin/${APP_NAME}"
+              echo "::group::Missing libraries"
+              ldd "$BIN" obj-release/dist/bin/libxul.so | grep "not found" || echo "none"
+              echo "::endgroup::"
+              echo "::group::Startup backtrace (gdb)"
+              mkdir -p /tmp/diag-profile
+              timeout 180 xvfb-run -a -s "-screen 0 2560x1440x24" \
+                gdb -q -batch -nx \
+                  -ex "set pagination off" \
+                  -ex "set follow-fork-mode parent" \
+                  -ex "handle SIGSYS SIGPIPE SIGUSR1 SIGUSR2 nostop noprint" \
+                  -ex run \
+                  -ex "info registers rip" \
+                  -ex "x/3i \$pc" \
+                  -ex "bt 40" \
+                  -ex "thread apply all bt 8" \
+                  --args "$BIN" -no-remote -profile /tmp/diag-profile about:blank \
+                2>&1 | grep -vE "^\[(New|Thread|Detaching|Inferior)" | tail -n 250 || true
               echo "::endgroup::"
               exit 1
             }

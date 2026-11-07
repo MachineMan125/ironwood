@@ -55,6 +55,9 @@ export RUSTFLAGS="-C target-cpu=skylake"
 case "${PGO_STAGE:-none}" in
   generate)
     ac_add_options --enable-profile-generate=cross
+    # Keep symbols in this throwaway build so crashes give readable backtraces.
+    ac_add_options --disable-strip
+    ac_add_options --disable-install-strip
     ;;
   use)
     ac_add_options --enable-profile-use=cross

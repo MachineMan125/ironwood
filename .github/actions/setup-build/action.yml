@@ -36,7 +36,7 @@ runs:
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends \
           python3 python3-pip curl xz-utils patch unzip m4 \
-          xvfb dbus-x11 libgtk-3-0t64 libasound2t64 libx11-xcb1 \
+          xvfb dbus-x11 gdb libgtk-3-0t64 libasound2t64 libx11-xcb1 \
           libdbus-glib-1-2 libpci3 libxtst6
 
     # Toolchains that mach bootstraps (clang, rust, sysroot...) ~3 GB.
