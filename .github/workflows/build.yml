@@ -36,6 +36,9 @@ env:
   MACH_BUILD_PYTHON_NATIVE_PACKAGE_SOURCE: pip
   SCCACHE_GHA_ENABLED: "true"
   SCCACHE_CACHE_SIZE: 8G
+  # Keep the sccache server alive through long link/package phases,
+  # so its end-of-job stats step doesn't fail.
+  SCCACHE_IDLE_TIMEOUT: "0"
 
 concurrency:
   group: ironwood-${{ github.ref }}
@@ -91,13 +94,34 @@ jobs:
 
       # Mozilla's own profiling run: loads a set of real pages and
       # writes merged.profdata (code profile) and en-US.log (jar order).
+      #
+      # Ubuntu 24.04 runners block unprivileged user namespaces through
+      # AppArmor, which Firefox's sandbox needs; the browser then crashes
+      # at startup. Lift that limit on the runner, and also switch the
+      # sandboxes off for this profiling run only (the final build is
+      # not affected).
+      - name: Allow Firefox sandbox on the runner
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 || true
+
       - name: Collect profile under Xvfb
         working-directory: src
         env:
           JARLOG_FILE: en-US.log
+          MOZ_DISABLE_CONTENT_SANDBOX: "1"
+          MOZ_DISABLE_GMP_SANDBOX: "1"
+          MOZ_DISABLE_RDD_SANDBOX: "1"
+          MOZ_DISABLE_SOCKET_PROCESS_SANDBOX: "1"
+          MOZ_DISABLE_UTILITY_SANDBOX: "1"
         run: |
           xvfb-run -a -s "-screen 0 2560x1440x24" \
-            ./mach python build/pgo/profileserver.py
+            ./mach python build/pgo/profileserver.py || {
+              echo "::group::Kernel messages (crash details)"
+              sudo dmesg | tail -n 40
+              echo "::endgroup::"
+              exit 1
+            }
           mkdir -p ../pgo-out
           PROF=$(find . -name merged.profdata -newer mozconfig | head -n1)
           JAR=$(find . -name en-US.log -newer mozconfig | head -n1)
