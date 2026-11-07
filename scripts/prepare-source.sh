@@ -51,9 +51,10 @@ B="browser/branding/${APP_NAME}"
 rm -rf "${B}"
 cp -r browser/branding/unofficial "${B}"
 
-# Rename every user-visible brand string (unofficial uses "Nightly").
-grep -rlE 'Nightly|Firefox' "${B}" --include='*.ftl' --include='*.properties' \
-     --include='*.sh' --include='*.mozbuild' --include='*.build' 2>/dev/null \
+# Rename the user-visible brand strings (unofficial uses "Nightly").
+# Only the locale files: moz.build calls build functions such as
+# FirefoxBranding(), which must keep their names.
+grep -rlE 'Nightly|Firefox' "${B}" --include='*.ftl' --include='*.properties' 2>/dev/null \
   | while read -r f; do
       sed -i -E "s/Mozilla Firefox|Firefox Nightly|Nightly|Firefox/${APP_DISPLAY}/g" "$f"
     done
