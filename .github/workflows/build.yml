@@ -1,0 +1,167 @@
+# =====================================================================
+#  Ironwood: build a Gecko browser for Devuan 6 (i5-7300U / HD 620)
+#
+#  Run it from the Actions tab -> "Build Ironwood" -> "Run workflow".
+#  With PGO on, this is two jobs:
+#    1. pgo-profile : instrumented build, run it under Xvfb, save profile
+#    2. build       : final LTO build using that profile, then a .deb
+#  Each job stays within GitHub's 6-hour limit for hosted runners.
+# =====================================================================
+name: Build Ironwood
+
+on:
+  workflow_dispatch:
+    inputs:
+      firefox_version:
+        description: 'Firefox version ("latest-esr", "latest", or exact e.g. 140.5.0esr)'
+        default: latest-esr
+        required: true
+      pgo:
+        description: Use profile-guided optimization (two jobs, ~2x build time)
+        type: boolean
+        default: true
+      publish_release:
+        description: Publish the .deb as a GitHub Release
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: ironwood
+  APP_DISPLAY: Ironwood
+  MOZCONFIG: ${{ github.workspace }}/src/mozconfig
+  MOZBUILD_STATE_PATH: /home/runner/.mozbuild
+  MACH_BUILD_PYTHON_NATIVE_PACKAGE_SOURCE: pip
+  SCCACHE_GHA_ENABLED: "true"
+  SCCACHE_CACHE_SIZE: 8G
+
+concurrency:
+  group: ironwood-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # -------------------------------------------------------------------
+  resolve:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        name: Resolve Firefox version
+        run: |
+          IN="${{ inputs.firefox_version }}"
+          case "$IN" in
+            latest-esr) KEY=FIREFOX_ESR ;;
+            latest)     KEY=LATEST_FIREFOX_VERSION ;;
+            *)          KEY="" ;;
+          esac
+          if [ -n "$KEY" ]; then
+            VER=$(curl -fsSL https://product-details.mozilla.org/1.0/firefox_versions.json \
+                  | python3 -c "import sys,json; print(json.load(sys.stdin)['$KEY'])")
+          else
+            VER="$IN"
+          fi
+          echo "Building Firefox $VER"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
+  # -------------------------------------------------------------------
+  pgo-profile:
+    if: ${{ inputs.pgo }}
+    needs: resolve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      PGO_STAGE: generate
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-build
+        with:
+          version: ${{ needs.resolve.outputs.version }}
+
+      - name: Build instrumented browser
+        working-directory: src
+        run: ./mach --no-interactive build
+
+      - name: Package instrumented build
+        working-directory: src
+        run: ./mach package
+
+      # Mozilla's own profiling run: loads a set of real pages and
+      # writes merged.profdata (code profile) and en-US.log (jar order).
+      - name: Collect profile under Xvfb
+        working-directory: src
+        env:
+          JARLOG_FILE: en-US.log
+        run: |
+          xvfb-run -a -s "-screen 0 2560x1440x24" \
+            ./mach python build/pgo/profileserver.py
+          mkdir -p ../pgo-out
+          PROF=$(find . -name merged.profdata -newer mozconfig | head -n1)
+          JAR=$(find . -name en-US.log -newer mozconfig | head -n1)
+          [ -n "$PROF" ] && [ -n "$JAR" ] || { echo "Profile files not found"; exit 1; }
+          cp "$PROF" ../pgo-out/merged.profdata
+          cp "$JAR"  ../pgo-out/en-US.log
+          ls -lh ../pgo-out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pgo-profile
+          path: pgo-out/
+          retention-days: 7
+
+  # -------------------------------------------------------------------
+  build:
+    needs: [resolve, pgo-profile]
+    # Run when PGO succeeded, or when PGO was switched off (skipped).
+    if: ${{ always() && needs.resolve.result == 'success' && (needs.pgo-profile.result == 'success' || needs.pgo-profile.result == 'skipped') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      PGO_STAGE: ${{ inputs.pgo && 'use' || 'none' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-build
+        with:
+          version: ${{ needs.resolve.outputs.version }}
+
+      - name: Fetch PGO profile
+        if: ${{ inputs.pgo }}
+        uses: actions/download-artifact@v4
+        with:
+          name: pgo-profile
+          path: src/
+
+      - name: Build optimized browser (LTO${{ inputs.pgo && ' + PGO' || '' }})
+        working-directory: src
+        run: ./mach --no-interactive build
+
+      - name: Package
+        working-directory: src
+        run: ./mach package
+
+      - name: Build .deb
+        run: scripts/make-deb.sh src "${{ needs.resolve.outputs.version }}" out
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ironwood-${{ needs.resolve.outputs.version }}-deb
+          path: out/*.deb
+          retention-days: 30
+
+      - name: Publish GitHub Release
+        if: ${{ inputs.publish_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v${{ needs.resolve.outputs.version }}-${{ github.run_number }}"
+          gh release create "$TAG" out/*.deb \
+            --title "Ironwood ${{ needs.resolve.outputs.version }} (build ${{ github.run_number }})" \
+            --notes "Built from Firefox ${{ needs.resolve.outputs.version }} source. PGO: ${{ inputs.pgo }}. Target: x86-64 Skylake ISA (i5-7300U)."

@@ -1,0 +1,68 @@
+# =====================================================================
+#  Ironwood mozconfig
+#  Target: Intel Core i5-7300U (Kaby Lake = Skylake ISA) + HD Graphics 620
+#          Devuan 6 "excalibur", MATE / Marco on X11
+#
+#  PGO_STAGE (environment, set by the workflow):
+#     generate -> instrumented build used to collect a profile
+#     use      -> final build optimized with that profile + LTO
+#     none     -> single-pass LTO build, no PGO (default)
+# =====================================================================
+
+ac_add_options --enable-application=browser
+mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/obj-release
+
+# ---- Toolchain ------------------------------------------------------
+# mach downloads the exact clang, rust, cbindgen, nasm, node and a
+# Debian-based sysroot that this Firefox version was tested with.
+ac_add_options --enable-bootstrap
+ac_add_options --enable-linker=lld
+ac_add_options --with-ccache=sccache
+
+# ---- Release build --------------------------------------------------
+ac_add_options --enable-release
+ac_add_options --enable-optimize
+ac_add_options --disable-debug
+ac_add_options --disable-tests
+ac_add_options --enable-strip
+ac_add_options --enable-install-strip
+
+# ---- Desktop: you run Marco on X11, so drop Wayland code paths ------
+ac_add_options --enable-default-toolkit=cairo-gtk3-x11-only
+
+# ---- Audio: ALSA backend for Devuan setups without Pulse/PipeWire ---
+# (PulseAudio support stays enabled; cubeb picks whichever is running.)
+ac_add_options --enable-alsa
+
+# ---- Distro integration / privacy -----------------------------------
+ac_add_options --disable-crashreporter
+ac_add_options --disable-updater            # apt handles updates
+# Telemetry upload is only compiled in when MOZ_TELEMETRY_REPORTING=1,
+# so leaving it unset keeps it out of the binary entirely.
+
+# ---- Branding (you may not ship under the Firefox name/logo) --------
+ac_add_options --with-app-name=${APP_NAME:-ironwood}
+ac_add_options --with-branding=browser/branding/${APP_NAME:-ironwood}
+
+# ---- CPU tuning for the i5-7300U ------------------------------------
+# Kaby Lake has the Skylake instruction set (AVX2, FMA, BMI2, no AVX-512).
+# NOTE: the result will not run on CPUs older than ~2015.
+export CFLAGS="-march=skylake -mtune=skylake"
+export CXXFLAGS="-march=skylake -mtune=skylake"
+export RUSTFLAGS="-C target-cpu=skylake"
+
+# ---- PGO + LTO ------------------------------------------------------
+case "${PGO_STAGE:-none}" in
+  generate)
+    ac_add_options --enable-profile-generate=cross
+    ;;
+  use)
+    ac_add_options --enable-profile-use=cross
+    ac_add_options --with-pgo-profile-path=$topsrcdir/merged.profdata
+    ac_add_options --with-pgo-jarlog=$topsrcdir/en-US.log
+    ac_add_options --enable-lto=cross
+    ;;
+  *)
+    ac_add_options --enable-lto=cross
+    ;;
+esac
