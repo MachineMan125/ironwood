@@ -13,13 +13,18 @@ ac_add_options --enable-application=browser
 mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/obj-release
 
 # ---- Toolchain ------------------------------------------------------
-# mach downloads the exact clang, rust, cbindgen, nasm, node and a
-# Debian-based sysroot that this Firefox version was tested with.
-# (Because of that sysroot the result does not depend on the build
-# host's glibc.)
+# mach downloads the exact clang, cbindgen, nasm, node and a Debian-based
+# sysroot that this Firefox version was tested with. (Because of that
+# sysroot the result does not depend on the build host's glibc.)
+# Rust is NOT part of that: scripts/setup-rust.sh installs the version
+# Mozilla uses, so that its LLVM matches clang's (needed for PGO + LTO).
 ac_add_options --enable-bootstrap
 ac_add_options --enable-linker=lld
-# sccache is switched on per stage below.
+# sccache is switched on per stage below. It is given as a full path (the
+# binary installed by the workflow's sccache action) so that the build and
+# the action's end-of-job stats talk to the same sccache version; the
+# plain name would make mach download its own, different one.
+SCCACHE_BIN="${SCCACHE_PATH:-sccache}"
 
 # ---- Release build --------------------------------------------------
 ac_add_options --enable-release
@@ -63,7 +68,7 @@ case "${PGO_STAGE:-none}" in
     ac_add_options --disable-strip
     ac_add_options --disable-install-strip
     # This stage compiles the same way every run, so the cache pays off.
-    ac_add_options --with-ccache=sccache
+    ac_add_options --with-ccache=${SCCACHE_BIN}
     ;;
   use)
     ac_add_options --enable-profile-use=cross
@@ -77,13 +82,13 @@ case "${PGO_STAGE:-none}" in
     ac_add_options --disable-debug-symbols
     # No sccache: the profile data differs on every run, so compiles would
     # rarely hit the cache but would still upload gigabytes to it.
-    # To re-enable: ac_add_options --with-ccache=sccache
+    # To re-enable: ac_add_options --with-ccache=${SCCACHE_BIN}
     ;;
   *)
     ac_add_options --enable-lto=cross
     ac_add_options --enable-strip
     ac_add_options --enable-install-strip
     ac_add_options --disable-debug-symbols
-    ac_add_options --with-ccache=sccache
+    ac_add_options --with-ccache=${SCCACHE_BIN}
     ;;
 esac

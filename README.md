@@ -21,6 +21,8 @@ prefs/device-prefs.js            default prefs: VA-API, AV1 off, privacy
 prefs/policies.json              enterprise policies: no Pocket/sponsored, uBlock Origin
 patches/                         your own *.patch files, applied in name order
 scripts/prepare-source.sh        download + SHA512-verify source, patch, brand
+scripts/setup-rust.sh            install the Rust version Mozilla builds this Firefox with
+scripts/check-toolchain.sh       fail early if Rust's LLVM is newer than clang's
 scripts/make-deb.sh              turn `./mach package` output into a .deb
 .github/actions/setup-build/     shared runner setup (CPU check, disk, swap, deps, sccache)
 .github/workflows/build.yml      the workflow

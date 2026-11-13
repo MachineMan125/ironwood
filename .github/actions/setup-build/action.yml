@@ -1,5 +1,5 @@
 name: Set up Ironwood build
-description: Check the runner CPU, free disk space, add swap, install host packages and prepare the Firefox source tree.
+description: Check the runner CPU, free disk space, add swap, install host packages, prepare the Firefox source tree and install the matching Rust.
 
 inputs:
   version:
@@ -68,7 +68,7 @@ runs:
         sudo apt-get install -y --no-install-recommends \
           python3 python3-pip curl xz-utils patch unzip m4 \
           xvfb xauth dbus-x11 gdb libgtk-3-0t64 libasound2t64 libx11-xcb1 \
-          libdbus-glib-1-2 libpci3 libxtst6 desktop-file-utils
+          libdbus-glib-1-2 libpci3 libxtst6 desktop-file-utils python3-yaml
 
     # Toolchains that mach bootstraps (clang, rust, sysroot...) ~3 GB.
     # No restore-keys on purpose: restoring another version's toolchains
@@ -89,3 +89,10 @@ runs:
       run: |
         chmod +x scripts/*.sh
         scripts/prepare-source.sh "$FFVER" src
+
+    # mach bootstraps clang but not Rust, and the runner's default Rust is
+    # built on a newer LLVM than that clang, which breaks cross-language
+    # PGO and LTO. Install the Rust version Mozilla uses for this Firefox.
+    - name: Install matching Rust
+      shell: bash
+      run: scripts/setup-rust.sh src

@@ -103,6 +103,15 @@ jobs:
         with:
           version: ${{ needs.resolve.outputs.version }}
 
+      # Configure on its own first: a Rust / clang mismatch then fails here,
+      # after a few minutes, instead of at the profiling run or the link.
+      - name: Configure and check toolchains
+        working-directory: src
+        timeout-minutes: 20
+        run: |
+          ./mach --no-interactive configure
+          ../scripts/check-toolchain.sh
+
       - name: Build instrumented browser
         working-directory: src
         timeout-minutes: 280
@@ -141,7 +150,7 @@ jobs:
             ./mach python build/pgo/profileserver.py || {
               BIN="obj-release/dist/bin/${APP_NAME}"
               echo "::group::Missing libraries"
-              ldd "$BIN" obj-release/dist/bin/libxul.so | grep "not found" || echo "none"
+              LD_LIBRARY_PATH=obj-release/dist/bin ldd "$BIN" obj-release/dist/bin/libxul.so | grep "not found" || echo "none"
               echo "::endgroup::"
               echo "::group::Startup backtrace (gdb)"
               mkdir -p /tmp/diag-profile
@@ -209,6 +218,15 @@ jobs:
         with:
           name: pgo-profile
           path: src/
+
+      # Configure on its own first: a Rust / clang mismatch then fails here,
+      # after a few minutes, instead of at the profiling run or the link.
+      - name: Configure and check toolchains
+        working-directory: src
+        timeout-minutes: 20
+        run: |
+          ./mach --no-interactive configure
+          ../scripts/check-toolchain.sh
 
       - name: Build optimized browser (LTO${{ inputs.pgo && ' + PGO' || '' }})
         working-directory: src
