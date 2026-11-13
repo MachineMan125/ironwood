@@ -2,12 +2,15 @@
 #  Ironwood: build a Gecko browser for Devuan 6 (i5-7300U / HD 620)
 #
 #  Run it from the Actions tab -> "Build Ironwood" -> "Run workflow".
-#  With PGO on, this is two jobs:
+#  With PGO on, this is two build jobs:
 #    1. pgo-profile : instrumented build, run it under Xvfb, save profile
-#    2. build       : final LTO build using that profile, then a .deb
+#    2. build       : final LTO build using that profile, then a .deb,
+#                     test-installed on Debian trixie (Devuan 6's base)
+#  An optional third job publishes the .deb as a GitHub Release.
 #  Each job stays within GitHub's 6-hour limit for hosted runners.
 # =====================================================================
 name: Build Ironwood
+run-name: Ironwood ${{ inputs.firefox_version }}${{ inputs.pgo && ' (PGO)' || '' }}
 
 on:
   workflow_dispatch:
@@ -25,8 +28,14 @@ on:
         type: boolean
         default: false
 
+# Read-only by default; only the release job gets write access.
 permissions:
-  contents: write
+  contents: read
+
+# "shell: bash" (rather than the implicit default) turns on pipefail.
+defaults:
+  run:
+    shell: bash
 
 env:
   APP_NAME: ironwood
@@ -35,7 +44,6 @@ env:
   MOZBUILD_STATE_PATH: /home/runner/.mozbuild
   MACH_BUILD_PYTHON_NATIVE_PACKAGE_SOURCE: pip
   SCCACHE_GHA_ENABLED: "true"
-  SCCACHE_CACHE_SIZE: 8G
   # Keep the sccache server alive through long link/package phases,
   # so its end-of-job stats step doesn't fail.
   SCCACHE_IDLE_TIMEOUT: "0"
@@ -48,23 +56,30 @@ jobs:
   # -------------------------------------------------------------------
   resolve:
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
       - id: v
         name: Resolve Firefox version
+        env:
+          IN: ${{ inputs.firefox_version }}
         run: |
-          IN="${{ inputs.firefox_version }}"
           case "$IN" in
             latest-esr) KEY=FIREFOX_ESR ;;
             latest)     KEY=LATEST_FIREFOX_VERSION ;;
             *)          KEY="" ;;
           esac
           if [ -n "$KEY" ]; then
-            VER=$(curl -fsSL https://product-details.mozilla.org/1.0/firefox_versions.json \
-                  | python3 -c "import sys,json; print(json.load(sys.stdin)['$KEY'])")
+            VER=$(curl -fsSL --retry 5 https://product-details.mozilla.org/1.0/firefox_versions.json \
+                  | KEY="$KEY" python3 -c "import os,sys,json; print(json.load(sys.stdin)[os.environ['KEY']])")
           else
             VER="$IN"
+          fi
+          # The version ends up in a URL, a file name and the Debian version.
+          if ! [[ "$VER" =~ ^[0-9]+(\.[0-9]+)+(esr|b[0-9]+)?$ ]]; then
+            echo "::error::'$VER' does not look like a Firefox version (e.g. 140.5.0esr, 145.0.1, 146.0b5)"
+            exit 1
           fi
           echo "Building Firefox $VER"
           echo "version=$VER" >> "$GITHUB_OUTPUT"
@@ -74,11 +89,15 @@ jobs:
     if: ${{ inputs.pgo }}
     needs: resolve
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    # Below the 360-minute hard limit, so the steps after a slow build
+    # (stats, uploads) still get to run.
+    timeout-minutes: 350
     env:
       PGO_STAGE: generate
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - uses: ./.github/actions/setup-build
         with:
@@ -86,10 +105,12 @@ jobs:
 
       - name: Build instrumented browser
         working-directory: src
+        timeout-minutes: 280
         run: ./mach --no-interactive build
 
       - name: Package instrumented build
         working-directory: src
+        timeout-minutes: 20
         run: ./mach package
 
       # Mozilla's own profiling run: loads a set of real pages and
@@ -107,6 +128,7 @@ jobs:
 
       - name: Collect profile under Xvfb
         working-directory: src
+        timeout-minutes: 40
         env:
           JARLOG_FILE: en-US.log
           MOZ_DISABLE_CONTENT_SANDBOX: "1"
@@ -139,30 +161,43 @@ jobs:
               exit 1
             }
           mkdir -p ../pgo-out
-          PROF=$(find . -name merged.profdata -newer mozconfig | head -n1)
-          JAR=$(find . -name en-US.log -newer mozconfig | head -n1)
-          [ -n "$PROF" ] && [ -n "$JAR" ] || { echo "Profile files not found"; exit 1; }
+          # -print -quit instead of "| head -n1": with pipefail, head closing
+          # the pipe early could fail the step.
+          PROF=$(find . -name merged.profdata -newer mozconfig -print -quit)
+          JAR=$(find . -name en-US.log -newer mozconfig -print -quit)
+          [ -n "$PROF" ] && [ -n "$JAR" ] || { echo "::error::Profile files not found"; exit 1; }
+          [ -s "$PROF" ] && [ -s "$JAR" ] || { echo "::error::Profile files are empty"; exit 1; }
           cp "$PROF" ../pgo-out/merged.profdata
           cp "$JAR"  ../pgo-out/en-US.log
           ls -lh ../pgo-out
 
-      - uses: actions/upload-artifact@v4
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
+      - uses: actions/upload-artifact@v6
         with:
           name: pgo-profile
           path: pgo-out/
           retention-days: 7
+          overwrite: true
+          if-no-files-found: error
 
   # -------------------------------------------------------------------
   build:
     needs: [resolve, pgo-profile]
     # Run when PGO succeeded, or when PGO was switched off (skipped).
-    if: ${{ always() && needs.resolve.result == 'success' && (needs.pgo-profile.result == 'success' || needs.pgo-profile.result == 'skipped') }}
+    # !cancelled() (not always()) so cancelling the run really stops it.
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && (needs.pgo-profile.result == 'success' || needs.pgo-profile.result == 'skipped') }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    timeout-minutes: 350
     env:
       PGO_STAGE: ${{ inputs.pgo && 'use' || 'none' }}
+      FFVER: ${{ needs.resolve.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - uses: ./.github/actions/setup-build
         with:
@@ -170,38 +205,87 @@ jobs:
 
       - name: Fetch PGO profile
         if: ${{ inputs.pgo }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: pgo-profile
           path: src/
 
       - name: Build optimized browser (LTO${{ inputs.pgo && ' + PGO' || '' }})
         working-directory: src
+        timeout-minutes: 300
         run: ./mach --no-interactive build
 
       - name: Package
         working-directory: src
+        timeout-minutes: 20
         run: ./mach package
 
       - name: Build .deb
-        run: scripts/make-deb.sh src "${{ needs.resolve.outputs.version }}" out
+        run: scripts/make-deb.sh src "$FFVER" out
 
       - name: sccache stats
         if: always()
         run: sccache --show-stats || true
 
-      - uses: actions/upload-artifact@v4
+      - name: Disk usage
+        if: always()
+        run: df -h / /mnt 2>/dev/null || df -h /
+
+      # Uploaded before the install test, so the package is still
+      # available for inspection if the test is what fails.
+      - uses: actions/upload-artifact@v6
         with:
           name: ironwood-${{ needs.resolve.outputs.version }}-deb
-          path: out/*.deb
+          path: |
+            out/*.deb
+            out/SHA256SUMS
           retention-days: 30
+          if-no-files-found: error
+
+      # Devuan 6 "excalibur" is based on Debian trixie. Installing there
+      # checks the hand-written Depends line, and running the binary
+      # checks that it starts and that no shared library is missing.
+      - name: Test-install on Debian trixie
+        timeout-minutes: 15
+        run: |
+          docker run --rm -v "$PWD/out:/deb:ro" -e APP_NAME debian:trixie \
+            bash -euo pipefail -c '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              apt-get install -y --no-install-recommends /deb/*.deb
+              "$APP_NAME" --version
+              lib="/usr/lib/$APP_NAME"
+              missing=$(LD_LIBRARY_PATH="$lib" ldd "$lib/$APP_NAME" "$lib/libxul.so" | grep "not found" | sort -u || true)
+              if [ -n "$missing" ]; then
+                echo "Unresolved shared libraries:"; echo "$missing"; exit 1
+              fi
+              echo "Install test passed"
+            '
+
+  # -------------------------------------------------------------------
+  release:
+    needs: [resolve, build]
+    if: ${{ !cancelled() && inputs.publish_release && needs.build.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: ironwood-${{ needs.resolve.outputs.version }}-deb
+          path: out/
 
       - name: Publish GitHub Release
-        if: ${{ inputs.publish_release }}
         env:
           GH_TOKEN: ${{ github.token }}
+          FFVER: ${{ needs.resolve.outputs.version }}
+          PGO: ${{ inputs.pgo }}
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
-          TAG="v${{ needs.resolve.outputs.version }}-${{ github.run_number }}"
-          gh release create "$TAG" out/*.deb \
-            --title "Ironwood ${{ needs.resolve.outputs.version }} (build ${{ github.run_number }})" \
-            --notes "Built from Firefox ${{ needs.resolve.outputs.version }} source. PGO: ${{ inputs.pgo }}. Target: x86-64 Skylake ISA (i5-7300U)."
+          (cd out && sha256sum -c SHA256SUMS)
+          gh release create "v${FFVER}-${RUN_NUMBER}" out/*.deb out/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Ironwood ${FFVER} (build ${RUN_NUMBER})" \
+            --notes "Built from Firefox ${FFVER} source. PGO: ${PGO}. Target: x86-64 Skylake ISA (i5-7300U)."
