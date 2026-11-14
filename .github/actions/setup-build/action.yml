@@ -1,5 +1,5 @@
 name: Set up Ironwood build
-description: Free disk space, add swap, install host packages and prepare the Firefox source tree.
+description: Check the runner CPU, free disk space, add swap, install host packages, prepare the Firefox source tree and install the matching Rust.
 
 inputs:
   version:
@@ -9,49 +9,90 @@ inputs:
 runs:
   using: composite
   steps:
+    # The build uses -march=skylake, and both jobs execute what they build
+    # (the PGO profiling run, and tools run during packaging). Fail in
+    # seconds, not after hours, if this runner's CPU cannot run that code.
+    - name: Check runner CPU
+      shell: bash
+      run: |
+        missing=""
+        for f in avx2 bmi1 bmi2 fma movbe f16c adx abm popcnt aes pclmulqdq rdrand rdseed; do
+          grep -qw "$f" /proc/cpuinfo || missing="$missing $f"
+        done
+        grep -m1 'model name' /proc/cpuinfo || true
+        if [ -n "$missing" ]; then
+          echo "::error::Runner CPU lacks:$missing (needed for -march=skylake code). Re-run to get another runner."
+          exit 1
+        fi
+
     # Hosted runners start with ~14 GB free; a Firefox LTO build needs ~40 GB.
+    # mach uses the system python3, so the hosted tool cache is not needed.
     - name: Free disk space
       shell: bash
       run: |
         sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-                    /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
-                    /usr/share/swift /usr/local/.ghcup || true
+                    /opt/hostedtoolcache /usr/local/share/boost \
+                    /usr/share/swift /usr/local/.ghcup \
+                    /usr/local/share/powershell /usr/local/share/chromium \
+                    /usr/lib/jvm /usr/share/miniconda || true
         sudo docker image prune -af >/dev/null 2>&1 || true
         df -h /
 
-    # The libxul LTO link is memory hungry; 16 GB RAM + 16 GB swap is safe.
+    # The libxul link is memory hungry; 16 GB RAM + 16 GB swap is safe.
+    # Prefer the runner's second disk (/mnt) when it exists, so the swap
+    # file does not take 16 GB away from the build on /.
     - name: Add swap
       shell: bash
       run: |
         sudo swapoff -a || true
-        sudo fallocate -l 16G /swapfile-build
-        sudo chmod 600 /swapfile-build
-        sudo mkswap /swapfile-build
-        sudo swapon /swapfile-build
+        sudo rm -f /mnt/swapfile /swapfile || true
+        SWAPDIR=""
+        if mountpoint -q /mnt; then
+          avail=$(df --output=avail -BG /mnt | tail -n1 | tr -dc '0-9')
+          if [ "${avail:-0}" -ge 20 ]; then SWAPDIR=/mnt; fi
+        fi
+        SWAPFILE="${SWAPDIR}/swapfile-build"
+        echo "Swap file: ${SWAPFILE}"
+        sudo fallocate -l 16G "${SWAPFILE}"
+        sudo chmod 600 "${SWAPFILE}"
+        sudo mkswap "${SWAPFILE}"
+        sudo swapon "${SWAPFILE}"
         free -h
+        df -h / /mnt 2>/dev/null || df -h /
 
+    # xauth is needed by xvfb-run and is only a "Recommends" of xvfb.
     - name: Install host packages
       shell: bash
       run: |
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends \
           python3 python3-pip curl xz-utils patch unzip m4 \
-          xvfb dbus-x11 gdb libgtk-3-0t64 libasound2t64 libx11-xcb1 \
-          libdbus-glib-1-2 libpci3 libxtst6
+          xvfb xauth dbus-x11 gdb libgtk-3-0t64 libasound2t64 libx11-xcb1 \
+          libdbus-glib-1-2 libpci3 libxtst6 desktop-file-utils python3-yaml
 
     # Toolchains that mach bootstraps (clang, rust, sysroot...) ~3 GB.
+    # No restore-keys on purpose: restoring another version's toolchains
+    # and saving them again makes this cache grow with every release.
     - name: Cache ~/.mozbuild toolchains
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ~/.mozbuild
         key: mozbuild-${{ runner.os }}-${{ inputs.version }}
-        restore-keys: mozbuild-${{ runner.os }}-
 
     - name: Set up sccache
       uses: mozilla-actions/sccache-action@v0.0.9
 
     - name: Prepare Firefox source
       shell: bash
+      env:
+        FFVER: ${{ inputs.version }}
       run: |
         chmod +x scripts/*.sh
-        scripts/prepare-source.sh "${{ inputs.version }}" src
+        scripts/prepare-source.sh "$FFVER" src
+
+    # mach bootstraps clang but not Rust, and the runner's default Rust is
+    # built on a newer LLVM than that clang, which breaks cross-language
+    # PGO and LTO. Install the Rust version Mozilla uses for this Firefox.
+    - name: Install matching Rust
+      shell: bash
+      run: scripts/setup-rust.sh src

@@ -21,8 +21,10 @@ prefs/device-prefs.js            default prefs: VA-API, AV1 off, privacy
 prefs/policies.json              enterprise policies: no Pocket/sponsored, uBlock Origin
 patches/                         your own *.patch files, applied in name order
 scripts/prepare-source.sh        download + SHA512-verify source, patch, brand
+scripts/setup-rust.sh            install the Rust version Mozilla builds this Firefox with
+scripts/check-toolchain.sh       fail early if Rust's LLVM is newer than clang's
 scripts/make-deb.sh              turn `./mach package` output into a .deb
-.github/actions/setup-build/     shared runner setup (disk, swap, deps, sccache)
+.github/actions/setup-build/     shared runner setup (CPU check, disk, swap, deps, sccache)
 .github/workflows/build.yml      the workflow
 ```
 
@@ -33,7 +35,23 @@ scripts/make-deb.sh              turn `./mach package` output into a .deb
    - `firefox_version`: `latest-esr` (recommended), `latest`, or an exact version like `140.5.0esr`
    - `pgo`: on for best speed (two jobs, roughly 4–8 hours total); off for a quicker single job
    - `publish_release`: attach the `.deb` to a GitHub Release
-3. Download the `.deb` from the run's artifacts (or the Release).
+3. Download the `.deb` and `SHA256SUMS` from the run's artifacts (or the Release).
+
+Before the run finishes, the `.deb` is test-installed in a Debian trixie
+container (Devuan 6's base) to check its dependencies and that the
+browser starts.
+
+### Automatic builds
+
+The workflow also runs by itself twice a day. Each scheduled run checks
+Mozilla's current ESR version; if that version has already been built
+here it stops within seconds, otherwise it does the full PGO build and
+publishes the `.deb` as a GitHub Release. To be emailed when one
+appears, use **Watch → Custom → Releases** on the repository page.
+
+GitHub only runs the schedule from the default branch, and pauses it
+after 60 days without commits (re-enable it on the Actions page).
+Installing the new `.deb` is still done by hand.
 
 Use a **public** repository if you can: hosted runners are free there,
 while private repos use your Actions minutes, and a PGO build burns many.
@@ -54,14 +72,20 @@ Then open `about:support` in Ironwood and check:
 - **HARDWARE_VIDEO_DECODING**: available
 - **Refresh rate**: 100 (if it shows 60, uncomment `layout.frame_rate` in `/etc/ironwood/ironwood-prefs.js`)
 
-`/etc/ironwood/ironwood-prefs.js` is a conffile, so your edits survive upgrades.
+`/etc/ironwood/ironwood-prefs.js` and `/etc/ironwood/policies.json` are
+conffiles, so your edits survive upgrades. `/usr/lib/ironwood/ironwood-build-info.txt`
+records the Firefox version, source checksum and patches of the installed build.
+
+Package versions look like `140.5.0~esr-42`, where the last number is the
+workflow run number, so a rebuild of the same Firefox version installs as an upgrade.
 
 ## Keeping it secure
 
 Mozilla ships security fixes about every four weeks. Re-run the
 workflow with `latest-esr` each time; your patches, prefs and branding
 are reapplied automatically. If a patch stops applying, the
-`Prepare Firefox source` step fails and tells you which one.
+`Prepare Firefox source` step fails and tells you which one; a patch that
+still applies but no longer matches exactly produces a warning to refresh it.
 
 ## Notes and limits
 

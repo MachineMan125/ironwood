@@ -13,19 +13,31 @@ ac_add_options --enable-application=browser
 mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/obj-release
 
 # ---- Toolchain ------------------------------------------------------
-# mach downloads the exact clang, rust, cbindgen, nasm, node and a
-# Debian-based sysroot that this Firefox version was tested with.
+# mach downloads the exact clang, cbindgen, nasm, node and a Debian-based
+# sysroot that this Firefox version was tested with. (Because of that
+# sysroot the result does not depend on the build host's glibc.)
+# Rust is NOT part of that: scripts/setup-rust.sh installs the version
+# Mozilla uses, so that its LLVM matches clang's (needed for PGO + LTO).
 ac_add_options --enable-bootstrap
 ac_add_options --enable-linker=lld
-ac_add_options --with-ccache=sccache
+# sccache is switched on per stage below. It is given as a full path (the
+# binary installed by the workflow's sccache action) so that the build and
+# the action's end-of-job stats talk to the same sccache version; the
+# plain name would make mach download its own, different one.
+SCCACHE_BIN="${SCCACHE_PATH:-sccache}"
 
 # ---- Release build --------------------------------------------------
 ac_add_options --enable-release
 ac_add_options --enable-optimize
 ac_add_options --disable-debug
 ac_add_options --disable-tests
-ac_add_options --enable-strip
-ac_add_options --enable-install-strip
+# Stripping and debug symbols are set per stage below.
+
+# `./mach package` writes a plain .tar instead of a .tar.xz. Nothing uses
+# the compression: the profiling run reads the unpacked staging directory
+# and make-deb.sh unpacks the archive again, while xz on the unstripped
+# instrumented build alone takes 15-20+ minutes.
+ac_add_options MOZ_PKG_FORMAT=TAR
 
 # ---- Desktop: you run Marco on X11, so drop Wayland code paths ------
 ac_add_options --enable-default-toolkit=cairo-gtk3-x11-only
@@ -38,7 +50,9 @@ ac_add_options --enable-alsa
 ac_add_options --disable-crashreporter
 ac_add_options --disable-updater            # apt handles updates
 # Telemetry upload is only compiled in when MOZ_TELEMETRY_REPORTING=1,
-# so leaving it unset keeps it out of the binary entirely.
+# so leaving it unset keeps uploading out of the binary. The data
+# collection components themselves are still built; prefs/policies.json
+# should set DisableTelemetry and DisableFirefoxStudies as well.
 
 # ---- Branding (you may not ship under the Firefox name/logo) --------
 ac_add_options --with-app-name=${APP_NAME:-ironwood}
@@ -46,26 +60,41 @@ ac_add_options --with-branding=browser/branding/${APP_NAME:-ironwood}
 
 # ---- CPU tuning for the i5-7300U ------------------------------------
 # Kaby Lake has the Skylake instruction set (AVX2, FMA, BMI2, no AVX-512).
+# -march=skylake also selects -mtune=skylake.
 # NOTE: the result will not run on CPUs older than ~2015.
-export CFLAGS="-march=skylake -mtune=skylake"
-export CXXFLAGS="-march=skylake -mtune=skylake"
+export CFLAGS="-march=skylake"
+export CXXFLAGS="-march=skylake"
 export RUSTFLAGS="-C target-cpu=skylake"
 
-# ---- PGO + LTO ------------------------------------------------------
+# ---- PGO + LTO, and what differs per stage --------------------------
 case "${PGO_STAGE:-none}" in
   generate)
     ac_add_options --enable-profile-generate=cross
     # Keep symbols in this throwaway build so crashes give readable backtraces.
     ac_add_options --disable-strip
     ac_add_options --disable-install-strip
+    # This stage compiles the same way every run, so the cache pays off.
+    ac_add_options --with-ccache=${SCCACHE_BIN}
     ;;
   use)
     ac_add_options --enable-profile-use=cross
     ac_add_options --with-pgo-profile-path=$topsrcdir/merged.profdata
     ac_add_options --with-pgo-jarlog=$topsrcdir/en-US.log
     ac_add_options --enable-lto=cross
+    ac_add_options --enable-strip
+    ac_add_options --enable-install-strip
+    # The package is stripped and there is no crash reporter, so debug
+    # info would only cost disk, memory and time here.
+    ac_add_options --disable-debug-symbols
+    # No sccache: the profile data differs on every run, so compiles would
+    # rarely hit the cache but would still upload gigabytes to it.
+    # To re-enable: ac_add_options --with-ccache=${SCCACHE_BIN}
     ;;
   *)
     ac_add_options --enable-lto=cross
+    ac_add_options --enable-strip
+    ac_add_options --enable-install-strip
+    ac_add_options --disable-debug-symbols
+    ac_add_options --with-ccache=${SCCACHE_BIN}
     ;;
 esac
