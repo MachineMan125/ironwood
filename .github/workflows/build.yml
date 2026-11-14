@@ -142,12 +142,16 @@ jobs:
         timeout-minutes: 90
         env:
           JARLOG_FILE: en-US.log
+          # Without this, profileserver.py leaves the raw *.profraw files
+          # unmerged and never writes merged.profdata.
+          LLVM_PROFDATA: ${{ env.MOZBUILD_STATE_PATH }}/clang/bin/llvm-profdata
           MOZ_DISABLE_CONTENT_SANDBOX: "1"
           MOZ_DISABLE_GMP_SANDBOX: "1"
           MOZ_DISABLE_RDD_SANDBOX: "1"
           MOZ_DISABLE_SOCKET_PROCESS_SANDBOX: "1"
           MOZ_DISABLE_UTILITY_SANDBOX: "1"
         run: |
+          [ -x "$LLVM_PROFDATA" ] || { echo "::error::llvm-profdata not found at $LLVM_PROFDATA"; exit 1; }
           xvfb-run -a -s "-screen 0 2560x1440x24" \
             ./mach python build/pgo/profileserver.py || {
               BIN="obj-release/dist/bin/${APP_NAME}"
@@ -176,7 +180,11 @@ jobs:
           # the pipe early could fail the step.
           PROF=$(find . -name merged.profdata -newer mozconfig -print -quit)
           JAR=$(find . -name en-US.log -newer mozconfig -print -quit)
-          [ -n "$PROF" ] && [ -n "$JAR" ] || { echo "::error::Profile files not found"; exit 1; }
+          if [ -z "$PROF" ] || [ -z "$JAR" ]; then
+            echo "::error::Profile files not found (merged.profdata: ${PROF:-missing}, en-US.log: ${JAR:-missing})"
+            echo "Raw profiles in $(pwd): $(find . -maxdepth 1 -name '*.profraw' | wc -l)"
+            exit 1
+          fi
           [ -s "$PROF" ] && [ -s "$JAR" ] || { echo "::error::Profile files are empty"; exit 1; }
           cp "$PROF" ../pgo-out/merged.profdata
           cp "$JAR"  ../pgo-out/en-US.log
