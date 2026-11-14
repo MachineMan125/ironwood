@@ -10,8 +10,12 @@
 # No systemd or init-system hooks are involved.
 #
 # Environment:
-#   DEB_REVISION  Debian revision; defaults to the GitHub run number, so
-#                 a rebuild of the same Firefox version is an upgrade.
+#   CPU_TARGET    CPU generation the browser was built for (skylake,
+#                 ivybridge or westmere; default skylake). It becomes part
+#                 of the version and file name, and selects
+#                 prefs/device-prefs-<target>.js when that file exists.
+#   DEB_REVISION  Debian revision; defaults to <GitHub run number>+<target>,
+#                 so a rebuild of the same Firefox version is an upgrade.
 #   PGO_STAGE     "use" when the build used a PGO profile (description only).
 # ---------------------------------------------------------------------
 set -euo pipefail
@@ -25,10 +29,17 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 
 [[ "${FFVER}" =~ ^[0-9]+(\.[0-9]+)+(esr|b[0-9]+)?$ ]] \
   || { echo "Not a Firefox version: '${FFVER}'"; exit 1; }
-DEBREV="${DEB_REVISION:-${GITHUB_RUN_NUMBER:-1}}"
+TARGET="${CPU_TARGET:-skylake}"
+case "${TARGET}" in
+  skylake)   TARGET_DESC="Skylake-class CPUs and newer (Intel Core i5-7300U with HD Graphics 620)" ;;
+  ivybridge) TARGET_DESC="Ivy Bridge-class CPUs and newer (HP Z220)" ;;
+  westmere)  TARGET_DESC="Westmere-class CPUs and newer (Dell Latitude E6410)" ;;
+  *) echo "Unknown CPU_TARGET '${TARGET}' (expected skylake, ivybridge or westmere)"; exit 1 ;;
+esac
+DEBREV="${DEB_REVISION:-${GITHUB_RUN_NUMBER:-1}+${TARGET}}"
 [[ "${DEBREV}" =~ ^[0-9a-z.+~]+$ ]] || { echo "Invalid Debian revision: '${DEBREV}'"; exit 1; }
 
-# Debian version: 140.5.0esr -> 140.5.0~esr-<rev>, 146.0b5 -> 146.0~b5-<rev>
+# Debian version: 140.5.0esr -> 140.5.0~esr-<run>+<target>, 146.0b5 -> 146.0~b5-<run>+<target>
 # ("~" sorts before the plain release in dpkg).
 DEBVER="$(sed -E 's/(esr|b[0-9]+)$/~\1/' <<<"${FFVER}")-${DEBREV}"
 
@@ -58,8 +69,12 @@ tar -xf "${PKG_TARBALL}" -C "${LIBDIR}" --strip-components=1
 # Launcher
 ln -s "/usr/lib/${APP_NAME}/${APP_NAME}" "${ROOT}/usr/bin/${APP_NAME}"
 
-# Default prefs: Debian-style, editable in /etc
-cp "${REPO}/prefs/device-prefs.js" "${ETCDIR}/${APP_NAME}-prefs.js"
+# Default prefs: Debian-style, editable in /etc. A machine whose hardware
+# needs different defaults can have its own prefs/device-prefs-<target>.js.
+PREFS_SRC="${REPO}/prefs/device-prefs.js"
+if [ -f "${REPO}/prefs/device-prefs-${TARGET}.js" ]; then PREFS_SRC="${REPO}/prefs/device-prefs-${TARGET}.js"; fi
+echo ">> Default prefs: ${PREFS_SRC#"${REPO}"/}"
+cp "${PREFS_SRC}" "${ETCDIR}/${APP_NAME}-prefs.js"
 mkdir -p "${LIBDIR}/defaults/pref"
 ln -s "/etc/${APP_NAME}/${APP_NAME}-prefs.js" "${LIBDIR}/defaults/pref/${APP_NAME}-prefs.js"
 # Files in defaults/pref only understand pref(), not user_pref().
@@ -78,6 +93,7 @@ ln -s "/etc/${APP_NAME}/policies.json" "${LIBDIR}/distribution/policies.json"
 if [ -f "${SRC}/ironwood-build-info.txt" ]; then
   cp "${SRC}/ironwood-build-info.txt" "${LIBDIR}/${APP_NAME}-build-info.txt"
   echo "Package version: ${DEBVER}" >> "${LIBDIR}/${APP_NAME}-build-info.txt"
+  echo "CPU target: ${TARGET}" >> "${LIBDIR}/${APP_NAME}-build-info.txt"
 fi
 
 # Icons
@@ -142,8 +158,9 @@ Recommends: libavcodec61 | libavcodec60 | libavcodec-extra, libegl1, libgl1, int
 Suggests: libpulse0
 Provides: www-browser, gnome-www-browser
 Description: Ironwood web browser
- Gecko-based browser built from Firefox ${FFVER} source, tuned for an
- Intel Core i5-7300U with HD Graphics 620 on Devuan with MATE (X11).
+ Gecko-based browser built from Firefox ${FFVER} source for
+ ${TARGET_DESC},
+ on Devuan with MATE (X11). It does not start on older CPUs.
  Built with ${OPTIMIZED}, ALSA audio, VA-API video
  decoding enabled, and telemetry upload, the crash reporter and the
  built-in updater left out.
