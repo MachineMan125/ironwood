@@ -9,15 +9,20 @@
 #  An optional third job publishes the .deb as a GitHub Release.
 #  Each job stays within GitHub's 6-hour limit for hosted runners.
 #
-#  It also runs by itself twice a day. A scheduled run first checks
-#  whether Mozilla's current ESR version has already been built here
-#  (a release, or an unexpired package from a successful run). If so it
-#  ends within seconds; if not it does the full PGO build and publishes
-#  the .deb as a GitHub Release. GitHub only runs schedules from the
-#  default branch, and pauses them after 60 days without commits.
+#  Each build is for one CPU target (skylake, ivybridge or westmere):
+#  the package only runs on that CPU generation or newer. The target is
+#  part of the package version, e.g. 153.7.0~esr-12+ivybridge.
+#
+#  It also runs by itself twice a day. A scheduled run checks, for every
+#  CPU target in AUTO_TARGETS, whether Mozilla's current ESR version has
+#  already been published here (release v<version> carrying
+#  SHA256SUMS-<target>.txt). Targets that have it are skipped; the others
+#  get the full PGO build and are added to that release. GitHub only runs
+#  schedules from the default branch, and pauses them after 60 days
+#  without commits.
 # =====================================================================
 name: Build Ironwood
-run-name: ${{ github.event_name == 'schedule' && 'Scheduled check for a new Firefox ESR' || format('Ironwood {0}{1}', inputs.firefox_version, inputs.pgo && ' (PGO)' || '') }}
+run-name: ${{ github.event_name == 'schedule' && 'Scheduled check for a new Firefox ESR' || format('Ironwood {0} / {1}{2}', inputs.firefox_version, inputs.cpu_target, inputs.pgo && ' (PGO)' || '') }}
 
 on:
   schedule:
@@ -29,6 +34,14 @@ on:
         description: 'Firefox version ("latest-esr", "latest", or exact e.g. 140.5.0esr)'
         default: latest-esr
         required: true
+      cpu_target:
+        description: 'CPU generation to build for: skylake (i5-7300U laptop), ivybridge (HP Z220), westmere (Latitude E6410). The package will not start on an older CPU.'
+        type: choice
+        default: skylake
+        options:
+          - skylake
+          - ivybridge
+          - westmere
       pgo:
         description: Use profile-guided optimization (two jobs, ~2x build time)
         type: boolean
@@ -50,6 +63,8 @@ defaults:
 env:
   APP_NAME: ironwood
   APP_DISPLAY: Ironwood
+  # CPU targets that scheduled runs build, space separated.
+  AUTO_TARGETS: skylake ivybridge
   MOZCONFIG: ${{ github.workspace }}/src/mozconfig
   MOZBUILD_STATE_PATH: /home/runner/.mozbuild
   MACH_BUILD_PYTHON_NATIVE_PACKAGE_SOURCE: pip
@@ -67,9 +82,6 @@ jobs:
   resolve:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    permissions:
-      contents: read
-      actions: read
     outputs:
       version: ${{ steps.v.outputs.version }}
       # 'true' / 'false' strings. A scheduled run has no inputs, so the
@@ -77,24 +89,32 @@ jobs:
       needed: ${{ steps.v.outputs.needed }}
       pgo: ${{ steps.v.outputs.pgo }}
       publish: ${{ steps.v.outputs.publish }}
+      # CPU targets to build: a JSON list for the job matrices, and the
+      # same names separated by spaces for the release job.
+      targets: ${{ steps.v.outputs.targets }}
+      target_names: ${{ steps.v.outputs.target_names }}
     steps:
       - id: v
-        name: Resolve Firefox version and decide whether to build
+        name: Resolve Firefox version and decide what to build
         env:
           EVENT: ${{ github.event_name }}
           IN_VERSION: ${{ inputs.firefox_version }}
+          IN_TARGET: ${{ inputs.cpu_target }}
           IN_PGO: ${{ inputs.pgo }}
           IN_PUBLISH: ${{ inputs.publish_release }}
           GH_TOKEN: ${{ github.token }}
         run: |
           if [ "$EVENT" = schedule ]; then
             # Scheduled runs: newest ESR, with PGO, published as a release.
-            IN=latest-esr; PGO=true; PUBLISH=true
+            IN=latest-esr; PGO=true; PUBLISH=true; WANTED="$AUTO_TARGETS"
           else
-            IN="$IN_VERSION"; PGO="$IN_PGO"; PUBLISH="$IN_PUBLISH"
+            IN="$IN_VERSION"; PGO="$IN_PGO"; PUBLISH="$IN_PUBLISH"; WANTED="${IN_TARGET:-skylake}"
           fi
           [ "$PGO" = true ] || PGO=false
           [ "$PUBLISH" = true ] || PUBLISH=false
+          for t in $WANTED; do
+            case "$t" in skylake|ivybridge|westmere) ;; *) echo "::error::Unknown CPU target '$t'"; exit 1 ;; esac
+          done
 
           case "$IN" in
             latest-esr) KEY=FIREFOX_ESR ;;
@@ -113,29 +133,35 @@ jobs:
             exit 1
           fi
 
-          # A run started by hand always builds. A scheduled run builds only
-          # when this version has not been built here yet.
-          NEEDED=true
+          # A run started by hand always builds its target. A scheduled run
+          # builds only the targets that release v<version> does not have yet
+          # (a target is done once the release carries SHA256SUMS-<target>.txt).
+          TODO="$WANTED"
           if [ "$EVENT" = schedule ]; then
-            releases=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-              --jq "[.[] | select(.draft | not) | select(.tag_name | startswith(\"v${VER}-\"))] | length")
-            packages=0
-            for run in $(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=ironwood-${VER}-deb&per_page=100" \
-                           --jq '.artifacts[] | select(.expired | not) | .workflow_run.id'); do
-              # The package is uploaded before the install test, so only
-              # count it when its whole run succeeded.
-              if [ "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run" --jq .conclusion)" = success ]; then
-                packages=$((packages + 1))
+            if assets=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/v${VER}" --jq '.assets[].name' 2>/tmp/gh-err); then
+              :
+            elif grep -q -e 'Not Found' -e 'HTTP 404' /tmp/gh-err; then
+              assets=""
+            else
+              echo "::error::Could not read release v${VER}: $(cat /tmp/gh-err)"; exit 1
+            fi
+            TODO=""
+            for t in $WANTED; do
+              if printf '%s\n' "$assets" | grep -qx "SHA256SUMS-${t}.txt"; then
+                echo "$t: Firefox $VER already published"
+              else
+                echo "$t: Firefox $VER to build"; TODO="$TODO $t"
               fi
             done
-            echo "Firefox $VER: $releases release(s), $packages package(s) from successful runs"
-            if [ "$releases" -gt 0 ] || [ "$packages" -gt 0 ]; then NEEDED=false; fi
           fi
+          TODO=$(echo $TODO)
+          if [ -n "$TODO" ]; then NEEDED=true; else NEEDED=false; fi
+          TARGETS_JSON=$(python3 -c "import json,sys; print(json.dumps(sys.argv[1].split()))" "$TODO")
 
           if [ "$NEEDED" = true ]; then
-            msg="Building Firefox $VER (PGO: $PGO, publish release: $PUBLISH)"
+            msg="Building Firefox $VER for: $TODO (PGO: $PGO, publish release: $PUBLISH)"
           else
-            msg="Firefox $VER is already built here; nothing to do"
+            msg="Firefox $VER is already published for: $WANTED; nothing to do"
           fi
           echo "$msg"
           echo "### $msg" >> "$GITHUB_STEP_SUMMARY"
@@ -144,12 +170,19 @@ jobs:
             echo "needed=$NEEDED"
             echo "pgo=$PGO"
             echo "publish=$PUBLISH"
+            echo "targets=$TARGETS_JSON"
+            echo "target_names=$TODO"
           } >> "$GITHUB_OUTPUT"
 
   # -------------------------------------------------------------------
   pgo-profile:
     if: ${{ needs.resolve.outputs.needed == 'true' && needs.resolve.outputs.pgo == 'true' }}
     needs: resolve
+    name: pgo-profile (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.resolve.outputs.targets) }}
     runs-on: ubuntu-24.04
     # Below the 360-minute hard limit, so the steps after a slow build
     # (stats, uploads) still get to run.
@@ -158,6 +191,7 @@ jobs:
     timeout-minutes: 350
     env:
       PGO_STAGE: generate
+      CPU_TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -258,7 +292,7 @@ jobs:
 
       - uses: actions/upload-artifact@v6
         with:
-          name: pgo-profile
+          name: pgo-profile-${{ matrix.target }}
           path: pgo-out/
           retention-days: 7
           overwrite: true
@@ -267,13 +301,22 @@ jobs:
   # -------------------------------------------------------------------
   build:
     needs: [resolve, pgo-profile]
-    # Run when PGO succeeded, or when PGO was switched off (skipped).
+    # Runs after the profiling job whatever its result: with PGO off it was
+    # skipped, and when one CPU target's profiling failed the other targets
+    # should still build. A target whose profile is missing fails at
+    # "Fetch PGO profile".
     # !cancelled() (not always()) so cancelling the run really stops it.
-    if: ${{ !cancelled() && needs.resolve.result == 'success' && needs.resolve.outputs.needed == 'true' && (needs.pgo-profile.result == 'success' || needs.pgo-profile.result == 'skipped') }}
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && needs.resolve.outputs.needed == 'true' }}
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.resolve.outputs.targets) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 350
     env:
       PGO_STAGE: ${{ needs.resolve.outputs.pgo == 'true' && 'use' || 'none' }}
+      CPU_TARGET: ${{ matrix.target }}
       FFVER: ${{ needs.resolve.outputs.version }}
     steps:
       - uses: actions/checkout@v5
@@ -288,7 +331,7 @@ jobs:
         if: ${{ needs.resolve.outputs.pgo == 'true' }}
         uses: actions/download-artifact@v7
         with:
-          name: pgo-profile
+          name: pgo-profile-${{ matrix.target }}
           path: src/
 
       # Configure on its own first: a Rust / clang mismatch then fails here,
@@ -325,7 +368,7 @@ jobs:
       # available for inspection if the test is what fails.
       - uses: actions/upload-artifact@v6
         with:
-          name: ironwood-${{ needs.resolve.outputs.version }}-deb
+          name: ironwood-${{ needs.resolve.outputs.version }}-${{ matrix.target }}-deb
           path: |
             out/*.deb
             out/SHA256SUMS
@@ -355,27 +398,57 @@ jobs:
   # -------------------------------------------------------------------
   release:
     needs: [resolve, build]
-    if: ${{ !cancelled() && needs.resolve.outputs.publish == 'true' && needs.build.result == 'success' }}
+    # Publishes whatever built, even if another CPU target failed. A target
+    # that failed has no SHA256SUMS-<target>.txt in the release, so the
+    # next scheduled run builds it again.
+    if: ${{ !cancelled() && needs.resolve.outputs.publish == 'true' && needs.resolve.outputs.needed == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write
+      actions: read
     steps:
-      - uses: actions/download-artifact@v7
-        with:
-          name: ironwood-${{ needs.resolve.outputs.version }}-deb
-          path: out/
-
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           FFVER: ${{ needs.resolve.outputs.version }}
+          TARGETS: ${{ needs.resolve.outputs.target_names }}
           PGO: ${{ needs.resolve.outputs.pgo }}
-          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ID: ${{ github.run_id }}
         run: |
-          (cd out && sha256sum -c SHA256SUMS)
-          gh release create "v${FFVER}-${RUN_NUMBER}" out/*.deb out/SHA256SUMS \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --title "Ironwood ${FFVER} (build ${RUN_NUMBER})" \
-            --notes "Built from Firefox ${FFVER} source. PGO: ${PGO}. Target: x86-64 Skylake ISA (i5-7300U)."
+          TAG="v${FFVER}"
+          mkdir -p dl out
+          names=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" --jq '.artifacts[].name')
+          built=""
+          for t in $TARGETS; do
+            name="ironwood-${FFVER}-${t}-deb"
+            if ! printf '%s\n' "$names" | grep -qx "$name"; then
+              echo "::warning::No package for $t (its build failed); the next scheduled run will retry it"
+              continue
+            fi
+            gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" -n "$name" -D "dl/$t"
+            (cd "dl/$t" && sha256sum -c SHA256SUMS)
+            cp "dl/$t"/*.deb out/
+            cp "dl/$t/SHA256SUMS" "out/SHA256SUMS-$t.txt"
+            built="$built $t"
+          done
+          [ -n "$built" ] || { echo "::error::No CPU target built successfully; nothing to publish"; exit 1; }
+          ls -lh out
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" out/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            {
+              echo "Built from Firefox ${FFVER} source. PGO: ${PGO}."
+              echo
+              echo "There is one package per CPU generation; the name is in the file name. A package does not start on an older CPU than it was built for:"
+              echo
+              echo "- skylake: Core i5-7300U laptop (Skylake and newer)"
+              echo "- ivybridge: HP Z220 (Ivy Bridge and newer)"
+              echo "- westmere: Latitude E6410 (Westmere and newer)"
+              echo
+              echo "Install with: sudo apt install ./ironwood_*<cpu>_amd64.deb"
+            } > notes.md
+            gh release create "$TAG" out/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "Ironwood ${FFVER}" --notes-file notes.md
+          fi
+          echo "### Published $TAG for:$built" >> "$GITHUB_STEP_SUMMARY"
