@@ -64,7 +64,7 @@ env:
   APP_NAME: ironwood
   APP_DISPLAY: Ironwood
   # CPU targets that scheduled runs build, space separated.
-  AUTO_TARGETS: skylake ivybridge
+  AUTO_TARGETS: skylake ivybridge westmere
   MOZCONFIG: ${{ github.workspace }}/src/mozconfig
   MOZBUILD_STATE_PATH: /home/runner/.mozbuild
   MACH_BUILD_PYTHON_NATIVE_PACKAGE_SOURCE: pip

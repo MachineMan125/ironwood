@@ -66,7 +66,7 @@ the E6410.
 
 The workflow also runs by itself twice a day. Each scheduled run checks
 Mozilla's current ESR version for the CPU targets listed in `AUTO_TARGETS`
-(top of `build.yml`; `skylake ivybridge`). Targets already published in the
+(top of `build.yml`; `skylake ivybridge westmere`). Targets already published in the
 release `v<version>` are skipped; the others get the full PGO build and
 their `.deb` is added to that release. To be emailed when one
 appears, use **Watch → Custom → Releases** on the repository page.
