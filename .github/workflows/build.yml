@@ -8,11 +8,21 @@
 #                     test-installed on Debian trixie (Devuan 6's base)
 #  An optional third job publishes the .deb as a GitHub Release.
 #  Each job stays within GitHub's 6-hour limit for hosted runners.
+#
+#  It also runs by itself twice a day. A scheduled run first checks
+#  whether Mozilla's current ESR version has already been built here
+#  (a release, or an unexpired package from a successful run). If so it
+#  ends within seconds; if not it does the full PGO build and publishes
+#  the .deb as a GitHub Release. GitHub only runs schedules from the
+#  default branch, and pauses them after 60 days without commits.
 # =====================================================================
 name: Build Ironwood
-run-name: Ironwood ${{ inputs.firefox_version }}${{ inputs.pgo && ' (PGO)' || '' }}
+run-name: ${{ github.event_name == 'schedule' && 'Scheduled check for a new Firefox ESR' || format('Ironwood {0}{1}', inputs.firefox_version, inputs.pgo && ' (PGO)' || '') }}
 
 on:
+  schedule:
+    # 04:17 and 16:17 UTC, every day.
+    - cron: '17 4,16 * * *'
   workflow_dispatch:
     inputs:
       firefox_version:
@@ -57,14 +67,35 @@ jobs:
   resolve:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     outputs:
       version: ${{ steps.v.outputs.version }}
+      # 'true' / 'false' strings. A scheduled run has no inputs, so the
+      # other jobs read these instead of the inputs.
+      needed: ${{ steps.v.outputs.needed }}
+      pgo: ${{ steps.v.outputs.pgo }}
+      publish: ${{ steps.v.outputs.publish }}
     steps:
       - id: v
-        name: Resolve Firefox version
+        name: Resolve Firefox version and decide whether to build
         env:
-          IN: ${{ inputs.firefox_version }}
+          EVENT: ${{ github.event_name }}
+          IN_VERSION: ${{ inputs.firefox_version }}
+          IN_PGO: ${{ inputs.pgo }}
+          IN_PUBLISH: ${{ inputs.publish_release }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          if [ "$EVENT" = schedule ]; then
+            # Scheduled runs: newest ESR, with PGO, published as a release.
+            IN=latest-esr; PGO=true; PUBLISH=true
+          else
+            IN="$IN_VERSION"; PGO="$IN_PGO"; PUBLISH="$IN_PUBLISH"
+          fi
+          [ "$PGO" = true ] || PGO=false
+          [ "$PUBLISH" = true ] || PUBLISH=false
+
           case "$IN" in
             latest-esr) KEY=FIREFOX_ESR ;;
             latest)     KEY=LATEST_FIREFOX_VERSION ;;
@@ -81,12 +112,43 @@ jobs:
             echo "::error::'$VER' does not look like a Firefox version (e.g. 140.5.0esr, 145.0.1, 146.0b5)"
             exit 1
           fi
-          echo "Building Firefox $VER"
-          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
+          # A run started by hand always builds. A scheduled run builds only
+          # when this version has not been built here yet.
+          NEEDED=true
+          if [ "$EVENT" = schedule ]; then
+            releases=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq "[.[] | select(.draft | not) | select(.tag_name | startswith(\"v${VER}-\"))] | length")
+            packages=0
+            for run in $(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=ironwood-${VER}-deb&per_page=100" \
+                           --jq '.artifacts[] | select(.expired | not) | .workflow_run.id'); do
+              # The package is uploaded before the install test, so only
+              # count it when its whole run succeeded.
+              if [ "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run" --jq .conclusion)" = success ]; then
+                packages=$((packages + 1))
+              fi
+            done
+            echo "Firefox $VER: $releases release(s), $packages package(s) from successful runs"
+            if [ "$releases" -gt 0 ] || [ "$packages" -gt 0 ]; then NEEDED=false; fi
+          fi
+
+          if [ "$NEEDED" = true ]; then
+            msg="Building Firefox $VER (PGO: $PGO, publish release: $PUBLISH)"
+          else
+            msg="Firefox $VER is already built here; nothing to do"
+          fi
+          echo "$msg"
+          echo "### $msg" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "version=$VER"
+            echo "needed=$NEEDED"
+            echo "pgo=$PGO"
+            echo "publish=$PUBLISH"
+          } >> "$GITHUB_OUTPUT"
 
   # -------------------------------------------------------------------
   pgo-profile:
-    if: ${{ inputs.pgo }}
+    if: ${{ needs.resolve.outputs.needed == 'true' && needs.resolve.outputs.pgo == 'true' }}
     needs: resolve
     runs-on: ubuntu-24.04
     # Below the 360-minute hard limit, so the steps after a slow build
@@ -207,11 +269,11 @@ jobs:
     needs: [resolve, pgo-profile]
     # Run when PGO succeeded, or when PGO was switched off (skipped).
     # !cancelled() (not always()) so cancelling the run really stops it.
-    if: ${{ !cancelled() && needs.resolve.result == 'success' && (needs.pgo-profile.result == 'success' || needs.pgo-profile.result == 'skipped') }}
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && needs.resolve.outputs.needed == 'true' && (needs.pgo-profile.result == 'success' || needs.pgo-profile.result == 'skipped') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 350
     env:
-      PGO_STAGE: ${{ inputs.pgo && 'use' || 'none' }}
+      PGO_STAGE: ${{ needs.resolve.outputs.pgo == 'true' && 'use' || 'none' }}
       FFVER: ${{ needs.resolve.outputs.version }}
     steps:
       - uses: actions/checkout@v5
@@ -223,7 +285,7 @@ jobs:
           version: ${{ needs.resolve.outputs.version }}
 
       - name: Fetch PGO profile
-        if: ${{ inputs.pgo }}
+        if: ${{ needs.resolve.outputs.pgo == 'true' }}
         uses: actions/download-artifact@v7
         with:
           name: pgo-profile
@@ -238,7 +300,7 @@ jobs:
           ./mach --no-interactive configure
           ../scripts/check-toolchain.sh
 
-      - name: Build optimized browser (LTO${{ inputs.pgo && ' + PGO' || '' }})
+      - name: Build optimized browser (LTO${{ needs.resolve.outputs.pgo == 'true' && ' + PGO' || '' }})
         working-directory: src
         timeout-minutes: 300
         run: ./mach --no-interactive build
@@ -293,7 +355,7 @@ jobs:
   # -------------------------------------------------------------------
   release:
     needs: [resolve, build]
-    if: ${{ !cancelled() && inputs.publish_release && needs.build.result == 'success' }}
+    if: ${{ !cancelled() && needs.resolve.outputs.publish == 'true' && needs.build.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -308,7 +370,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           FFVER: ${{ needs.resolve.outputs.version }}
-          PGO: ${{ inputs.pgo }}
+          PGO: ${{ needs.resolve.outputs.pgo }}
           RUN_NUMBER: ${{ github.run_number }}
         run: |
           (cd out && sha256sum -c SHA256SUMS)

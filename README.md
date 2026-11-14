@@ -41,6 +41,18 @@ Before the run finishes, the `.deb` is test-installed in a Debian trixie
 container (Devuan 6's base) to check its dependencies and that the
 browser starts.
 
+### Automatic builds
+
+The workflow also runs by itself twice a day. Each scheduled run checks
+Mozilla's current ESR version; if that version has already been built
+here it stops within seconds, otherwise it does the full PGO build and
+publishes the `.deb` as a GitHub Release. To be emailed when one
+appears, use **Watch → Custom → Releases** on the repository page.
+
+GitHub only runs the schedule from the default branch, and pauses it
+after 60 days without commits (re-enable it on the Actions page).
+Installing the new `.deb` is still done by hand.
+
 Use a **public** repository if you can: hosted runners are free there,
 while private repos use your Actions minutes, and a PGO build burns many.
 
