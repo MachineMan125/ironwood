@@ -36,7 +36,7 @@ DEBVER="$(sed -E 's/(esr|b[0-9]+)$/~\1/' <<<"${FFVER}")-${DEBREV}"
 # failing ls would end the script before the message below).
 shopt -s nullglob
 PKG_TARBALL=""
-for f in "${SRC}"/obj-release/dist/"${APP_NAME}"-*.tar.*; do
+for f in "${SRC}"/obj-release/dist/"${APP_NAME}"-*.tar "${SRC}"/obj-release/dist/"${APP_NAME}"-*.tar.*; do
   case "$f" in *tests*|*.asc|*.sig) continue ;; esac
   PKG_TARBALL="$f"; break
 done

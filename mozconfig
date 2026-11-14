@@ -33,6 +33,12 @@ ac_add_options --disable-debug
 ac_add_options --disable-tests
 # Stripping and debug symbols are set per stage below.
 
+# `./mach package` writes a plain .tar instead of a .tar.xz. Nothing uses
+# the compression: the profiling run reads the unpacked staging directory
+# and make-deb.sh unpacks the archive again, while xz on the unstripped
+# instrumented build alone takes 15-20+ minutes.
+ac_add_options MOZ_PKG_FORMAT=TAR
+
 # ---- Desktop: you run Marco on X11, so drop Wayland code paths ------
 ac_add_options --enable-default-toolkit=cairo-gtk3-x11-only
 

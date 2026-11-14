@@ -91,6 +91,8 @@ jobs:
     runs-on: ubuntu-24.04
     # Below the 360-minute hard limit, so the steps after a slow build
     # (stats, uploads) still get to run.
+    # The step timeouts further down are only there to stop a hung step;
+    # they are set several times above the durations seen so far.
     timeout-minutes: 350
     env:
       PGO_STAGE: generate
@@ -107,7 +109,7 @@ jobs:
       # after a few minutes, instead of at the profiling run or the link.
       - name: Configure and check toolchains
         working-directory: src
-        timeout-minutes: 20
+        timeout-minutes: 30
         run: |
           ./mach --no-interactive configure
           ../scripts/check-toolchain.sh
@@ -119,7 +121,7 @@ jobs:
 
       - name: Package instrumented build
         working-directory: src
-        timeout-minutes: 20
+        timeout-minutes: 60
         run: ./mach package
 
       # Mozilla's own profiling run: loads a set of real pages and
@@ -137,7 +139,7 @@ jobs:
 
       - name: Collect profile under Xvfb
         working-directory: src
-        timeout-minutes: 40
+        timeout-minutes: 90
         env:
           JARLOG_FILE: en-US.log
           MOZ_DISABLE_CONTENT_SANDBOX: "1"
@@ -223,7 +225,7 @@ jobs:
       # after a few minutes, instead of at the profiling run or the link.
       - name: Configure and check toolchains
         working-directory: src
-        timeout-minutes: 20
+        timeout-minutes: 30
         run: |
           ./mach --no-interactive configure
           ../scripts/check-toolchain.sh
@@ -235,7 +237,7 @@ jobs:
 
       - name: Package
         working-directory: src
-        timeout-minutes: 20
+        timeout-minutes: 60
         run: ./mach package
 
       - name: Build .deb
@@ -264,7 +266,7 @@ jobs:
       # checks the hand-written Depends line, and running the binary
       # checks that it starts and that no shared library is missing.
       - name: Test-install on Debian trixie
-        timeout-minutes: 15
+        timeout-minutes: 30
         run: |
           docker run --rm -v "$PWD/out:/deb:ro" -e APP_NAME debian:trixie \
             bash -euo pipefail -c '
