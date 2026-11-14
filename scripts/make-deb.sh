@@ -150,6 +150,8 @@ if [ "${PGO_STAGE:-none}" = use ]; then OPTIMIZED="PGO and cross-language LTO"; 
 # No libc6 version is listed: the build uses Mozilla's sysroot, which
 # targets a much older glibc than any supported Devuan release has.
 # libegl1 / libgl1 are loaded at run time for hardware WebRender.
+# The VA-API driver depends on the graphics card: the Intel ones for Intel
+# graphics, mesa-va-drivers for AMD.
 cat > "${ROOT}/DEBIAN/control" <<EOF
 Package: ${APP_NAME}
 Version: ${DEBVER}
@@ -159,7 +161,7 @@ Installed-Size: ${SIZE_KB}
 Section: web
 Priority: optional
 Depends: libgtk-3-0t64 | libgtk-3-0, libasound2t64 | libasound2, libdbus-1-3, libx11-xcb1, libxtst6, libxrandr2, libpci3, fontconfig
-Recommends: libavcodec61 | libavcodec60 | libavcodec-extra, libegl1, libgl1, intel-media-va-driver-non-free | intel-media-va-driver | i965-va-driver, libva2
+Recommends: libavcodec61 | libavcodec60 | libavcodec-extra, libegl1, libgl1, intel-media-va-driver-non-free | intel-media-va-driver | i965-va-driver | mesa-va-drivers, libva2
 Suggests: libpulse0
 Provides: www-browser, gnome-www-browser
 Description: Ironwood web browser
