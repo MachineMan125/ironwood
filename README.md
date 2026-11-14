@@ -57,8 +57,10 @@ A package does not start on a CPU older than its target (it exits with
 file name, e.g. `ironwood_153.7.0~esr-12+ivybridge_amd64.deb`.
 
 All targets share `prefs/device-prefs.js`. To give one machine different
-defaults (for example a different GPU), add `prefs/device-prefs-<target>.js`;
-it is used instead for that target.
+defaults (for example a different GPU), add `prefs/device-prefs-<target>.js`
+with only the prefs that differ; it is appended to the shared file for
+that target, and its lines win. `device-prefs-westmere.js` does this for
+the E6410.
 
 ### Automatic builds
 

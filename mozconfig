@@ -58,6 +58,22 @@ ac_add_options --disable-updater            # apt handles updates
 # collection components themselves are still built; prefs/policies.json
 # should set DisableTelemetry and DisableFirefoxStudies as well.
 
+# ---- Leaner build ---------------------------------------------------
+# Components this setup does not use.
+ac_add_options --disable-parental-controls
+ac_add_options --disable-necko-wifi         # Wi-Fi scanning for geolocation
+# Not disabled, on purpose: accessibility support (screen readers and
+# other assistive tools) and the speech API (Reader View's "Listen").
+# To drop them as well:
+#   ac_add_options --disable-accessibility
+#   ac_add_options --disable-webspeech
+#   ac_add_options --disable-synth-speechd
+
+# ---- Rust optimization ----------------------------------------------
+# Release builds compile Rust at opt-level 2; 3 optimizes harder for
+# speed at the cost of a somewhat longer build and larger code.
+ac_add_options RUSTC_OPT_LEVEL=3
+
 # ---- Branding (you may not ship under the Firefox name/logo) --------
 ac_add_options --with-app-name=${APP_NAME:-ironwood}
 ac_add_options --with-branding=browser/branding/${APP_NAME:-ironwood}

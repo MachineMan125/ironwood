@@ -12,8 +12,8 @@
 # Environment:
 #   CPU_TARGET    CPU generation the browser was built for (skylake,
 #                 ivybridge or westmere; default skylake). It becomes part
-#                 of the version and file name, and selects
-#                 prefs/device-prefs-<target>.js when that file exists.
+#                 of the version and file name; prefs/device-prefs-<target>.js,
+#                 when it exists, is appended to the shared device-prefs.js.
 #   DEB_REVISION  Debian revision; defaults to <GitHub run number>+<target>,
 #                 so a rebuild of the same Firefox version is an upgrade.
 #   PGO_STAGE     "use" when the build used a PGO profile (description only).
@@ -69,12 +69,17 @@ tar -xf "${PKG_TARBALL}" -C "${LIBDIR}" --strip-components=1
 # Launcher
 ln -s "/usr/lib/${APP_NAME}/${APP_NAME}" "${ROOT}/usr/bin/${APP_NAME}"
 
-# Default prefs: Debian-style, editable in /etc. A machine whose hardware
-# needs different defaults can have its own prefs/device-prefs-<target>.js.
-PREFS_SRC="${REPO}/prefs/device-prefs.js"
-if [ -f "${REPO}/prefs/device-prefs-${TARGET}.js" ]; then PREFS_SRC="${REPO}/prefs/device-prefs-${TARGET}.js"; fi
-echo ">> Default prefs: ${PREFS_SRC#"${REPO}"/}"
-cp "${PREFS_SRC}" "${ETCDIR}/${APP_NAME}-prefs.js"
+# Default prefs: Debian-style, editable in /etc. The shared device-prefs.js
+# comes first; a machine whose hardware needs different defaults has a
+# prefs/device-prefs-<target>.js, which is appended. When a pref appears
+# twice, the later line wins.
+cp "${REPO}/prefs/device-prefs.js" "${ETCDIR}/${APP_NAME}-prefs.js"
+if [ -f "${REPO}/prefs/device-prefs-${TARGET}.js" ]; then
+  echo ">> Default prefs: device-prefs.js + device-prefs-${TARGET}.js"
+  { echo; cat "${REPO}/prefs/device-prefs-${TARGET}.js"; } >> "${ETCDIR}/${APP_NAME}-prefs.js"
+else
+  echo ">> Default prefs: device-prefs.js"
+fi
 mkdir -p "${LIBDIR}/defaults/pref"
 ln -s "/etc/${APP_NAME}/${APP_NAME}-prefs.js" "${LIBDIR}/defaults/pref/${APP_NAME}-prefs.js"
 # Files in defaults/pref only understand pref(), not user_pref().
