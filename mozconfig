@@ -1,7 +1,11 @@
 # =====================================================================
 #  Ironwood mozconfig
-#  Target: Intel Core i5-7300U (Kaby Lake = Skylake ISA) + HD Graphics 620
-#          Devuan 6 "excalibur", MATE / Marco on X11
+#  Target: Devuan 6 "excalibur", MATE / Marco on X11
+#
+#  CPU_TARGET (environment, set by the workflow; default skylake):
+#     skylake   -> Core i5-7300U laptop (Kaby Lake = Skylake ISA) + HD 620
+#     ivybridge -> HP Z220
+#     westmere  -> Latitude E6410
 #
 #  PGO_STAGE (environment, set by the workflow):
 #     generate -> instrumented build used to collect a profile
@@ -58,13 +62,18 @@ ac_add_options --disable-updater            # apt handles updates
 ac_add_options --with-app-name=${APP_NAME:-ironwood}
 ac_add_options --with-branding=browser/branding/${APP_NAME:-ironwood}
 
-# ---- CPU tuning for the i5-7300U ------------------------------------
-# Kaby Lake has the Skylake instruction set (AVX2, FMA, BMI2, no AVX-512).
-# -march=skylake also selects -mtune=skylake.
-# NOTE: the result will not run on CPUs older than ~2015.
-export CFLAGS="-march=skylake"
-export CXXFLAGS="-march=skylake"
-export RUSTFLAGS="-C target-cpu=skylake"
+# ---- CPU tuning ------------------------------------------------------
+# skylake:   AVX2, FMA, BMI2 (no AVX-512); will not run on CPUs older than ~2015.
+# ivybridge: AVX, F16C, RDRAND (no AVX2); will not run on CPUs older than ~2012.
+# westmere:  SSE4.2, AES, PCLMUL (no AVX); will not run on CPUs older than ~2010.
+# -march=<cpu> also selects -mtune=<cpu>. clang and rustc use the same names.
+case "${CPU_TARGET:-skylake}" in
+  skylake|ivybridge|westmere) IRONWOOD_CPU="${CPU_TARGET:-skylake}" ;;
+  *) echo "mozconfig: unknown CPU_TARGET '${CPU_TARGET}' (expected skylake, ivybridge or westmere)" >&2; exit 1 ;;
+esac
+export CFLAGS="-march=${IRONWOOD_CPU}"
+export CXXFLAGS="-march=${IRONWOOD_CPU}"
+export RUSTFLAGS="-C target-cpu=${IRONWOOD_CPU}"
 
 # ---- PGO + LTO, and what differs per stage --------------------------
 case "${PGO_STAGE:-none}" in

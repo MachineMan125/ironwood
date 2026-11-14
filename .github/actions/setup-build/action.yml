@@ -9,19 +9,28 @@ inputs:
 runs:
   using: composite
   steps:
-    # The build uses -march=skylake, and both jobs execute what they build
-    # (the PGO profiling run, and tools run during packaging). Fail in
-    # seconds, not after hours, if this runner's CPU cannot run that code.
+    # The build uses -march=$CPU_TARGET (set by the workflow job), and both
+    # jobs execute what they build (the PGO profiling run, and tools run
+    # during packaging). Fail in seconds, not after hours, if this runner's
+    # CPU cannot run that code.
     - name: Check runner CPU
       shell: bash
       run: |
+        target="${CPU_TARGET:-skylake}"
+        case "$target" in
+          skylake)   need="avx2 bmi1 bmi2 fma movbe f16c adx abm popcnt aes pclmulqdq rdrand rdseed" ;;
+          ivybridge) need="avx f16c rdrand fsgsbase popcnt aes pclmulqdq sse4_2" ;;
+          westmere)  need="sse4_2 popcnt aes pclmulqdq" ;;
+          *) echo "::error::Unknown CPU target '$target' (expected skylake, ivybridge or westmere)"; exit 1 ;;
+        esac
         missing=""
-        for f in avx2 bmi1 bmi2 fma movbe f16c adx abm popcnt aes pclmulqdq rdrand rdseed; do
+        for f in $need; do
           grep -qw "$f" /proc/cpuinfo || missing="$missing $f"
         done
         grep -m1 'model name' /proc/cpuinfo || true
+        echo "CPU target: $target"
         if [ -n "$missing" ]; then
-          echo "::error::Runner CPU lacks:$missing (needed for -march=skylake code). Re-run to get another runner."
+          echo "::error::Runner CPU lacks:$missing (needed for -march=$target code). Re-run to get another runner."
           exit 1
         fi
 

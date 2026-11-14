@@ -41,12 +41,32 @@ Before the run finishes, the `.deb` is test-installed in a Debian trixie
 container (Devuan 6's base) to check its dependencies and that the
 browser starts.
 
+### CPU targets
+
+Each build is for one CPU generation, chosen with the `cpu_target` option
+when you run the workflow:
+
+| `cpu_target` | Machine | Runs on |
+|---|---|---|
+| `skylake` | Core i5-7300U laptop | Skylake and newer |
+| `ivybridge` | HP Z220 | Ivy Bridge and newer |
+| `westmere` | Latitude E6410 | Westmere and newer |
+
+A package does not start on a CPU older than its target (it exits with
+"Illegal instruction"). The target is part of the package version and
+file name, e.g. `ironwood_153.7.0~esr-12+ivybridge_amd64.deb`.
+
+All targets share `prefs/device-prefs.js`. To give one machine different
+defaults (for example a different GPU), add `prefs/device-prefs-<target>.js`;
+it is used instead for that target.
+
 ### Automatic builds
 
 The workflow also runs by itself twice a day. Each scheduled run checks
-Mozilla's current ESR version; if that version has already been built
-here it stops within seconds, otherwise it does the full PGO build and
-publishes the `.deb` as a GitHub Release. To be emailed when one
+Mozilla's current ESR version for the CPU targets listed in `AUTO_TARGETS`
+(top of `build.yml`; `skylake ivybridge`). Targets already published in the
+release `v<version>` are skipped; the others get the full PGO build and
+their `.deb` is added to that release. To be emailed when one
 appears, use **Watch → Custom → Releases** on the repository page.
 
 GitHub only runs the schedule from the default branch, and pauses it
