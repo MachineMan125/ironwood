@@ -27,7 +27,7 @@ run-name: ${{ github.event_name == 'schedule' && 'Scheduled check for a new Fire
 on:
   schedule:
     # 04:17 and 16:17 UTC, every day.
-    - cron: '17 4,16 * * *'
+    - cron: '23 4,16 * * *'
   workflow_dispatch:
     inputs:
       firefox_version:
