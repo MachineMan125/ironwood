@@ -26,7 +26,7 @@ run-name: ${{ github.event_name == 'schedule' && 'Scheduled check for a new Fire
 
 on:
   schedule:
-    # 04:17 and 16:17 UTC, every day.
+    # 04:23 and 16:23 UTC, every day.
     - cron: '23 4,16 * * *'
   workflow_dispatch:
     inputs:
@@ -210,10 +210,18 @@ jobs:
           ./mach --no-interactive configure
           ../scripts/check-toolchain.sh
 
+      # Prints free memory, swap and disk every 2 minutes into the live log,
+      # so if the runner is lost again the last lines show what ran out.
       - name: Build instrumented browser
         working-directory: src
         timeout-minutes: 280
-        run: ./mach --no-interactive build
+        run: |
+          ( while sleep 120; do
+              echo "== $(date -u +%T) $(free -m | awk '/^Mem:/{printf "RAM avail %sM, ", $7} /^Swap:/{printf "swap used %sM, ", $3}')/ free: $(df -h --output=avail / | tail -n1 | tr -d ' ')"
+            done ) &
+          MON=$!
+          trap 'kill $MON 2>/dev/null || true' EXIT
+          ./mach --no-interactive build
 
       - name: Package instrumented build
         working-directory: src

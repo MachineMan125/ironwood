@@ -95,6 +95,11 @@ export RUSTFLAGS="-C target-cpu=${IRONWOOD_CPU}"
 case "${PGO_STAGE:-none}" in
   generate)
     ac_add_options --enable-profile-generate=cross
+    # No debug info: it is the largest share of this stage's memory and disk
+    # use, and runners were lost mid-build with it on. Function names stay
+    # (the build is not stripped), so gdb backtraces still name functions,
+    # only without line numbers.
+    ac_add_options --disable-debug-symbols
     # Keep symbols in this throwaway build so crashes give readable backtraces.
     ac_add_options --disable-strip
     ac_add_options --disable-install-strip
